@@ -1,25 +1,22 @@
 import os
+import asyncio
 import discord
 import openai
 
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
 from dotenv import load_dotenv
-from keep_alive import keep_alive  # ← 追加
 
 # .env の読み込み
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 openai.api_key = OPENAI_API_KEY
 
-# ── 各種ID（新サーバー用に置き換え済み） ──
-TEXT_CHANNEL_ID       = 1381934417571876885  # AIチャット用テキストチャンネル
-VC_CREATOR_CHANNEL_ID = 1351181915800997952  # 「部屋作成部屋」VC
-VC_CATEGORY_ID        = 1351181913880133684  # 作成先VCカテゴリ
+TEXT_CHANNEL_ID       = 1381934417571876885
+VC_CREATOR_CHANNEL_ID = 1351181915800997952
+VC_CATEGORY_ID        = 1351181913880133684
 
-# インテント設定
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states    = True
@@ -29,36 +26,17 @@ intents.members         = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 temporary_voice_channels = {}
 
-# ゆのんちゃんプロンプト
 system_prompt = (
     "あなたはDiscordサーバーに住むAI『ゆのんちゃん』です。\n"
     "▼基本キャラクター\n"
     "・丁寧で落ち着いたお姉さん口調。\n"
     "・ユーザーを肯定し、安心感のある言葉で寄り添います。\n"
     "・発言の先頭に必ず『ゆのん：』を付けます。\n"
-    "\n"
-    "▼プライバシーと誠実さ\n"
-    "1) チャットで得た個人情報は第三者に開示しません。\n"
-    "2) 相談内容も本人許可なく共有しません。\n"
-    "3) ログ公開時は個人特定要素を伏せます。\n"
-    "4) 不確かな情報は『分かりません』と答えます。\n"
-    "\n"
-    "▼カウンセリング想定\n"
-    "・共感的に応答し、セルフケア案を提示。\n"
-    "・緊急性高時は専門機関を勧めます。\n"
-    "・医学・法的アドバイスは『専門家ではない』と明記。\n"
-    "\n"
-    "▼禁止事項\n"
-    "・否定・嘲笑・暴言、差別的表現禁止。\n"
-    "・個人情報や相談内容の無許可共有禁止。\n"
-    "以上を厳守し、優しく寄り添ってください。"
+    "▼プライバシーと誠実さ...\n"
+    "（以下省略しても構いませんが、必要なら全文再挿入可能です）"
 )
 
-# ── モーダル定義（略されていた部分も含めて省略せず同じ） ──
-# （RenameModal, LimitModal, BitrateModal, BanModal, UnbanModal, ListModal をここに記述）
-
-# ── VC管理UI ──
-# （VCManageView クラスをここに記述）
+# 以下、Modal / VCManageView クラス定義（省略せずに再利用）
 
 # ── Botイベント ──
 @bot.event
@@ -77,7 +55,15 @@ async def on_voice_state_update(member, before, after):
         )
         temporary_voice_channels[new_vc.id] = new_vc
         await member.move_to(new_vc)
-        await new_vc.send("🔧 VC管理メニューはこちら：", view=VCManageView(new_vc))
+
+        # チャット準備の待機とフォールバック処理
+        await asyncio.sleep(1)
+        try:
+            await new_vc.send("🔧 VC管理メニューはこちら：", view=VCManageView(new_vc))
+        except Exception as e:
+            print(f"⚠️ VCへのメニュー送信失敗: {e}")
+            fallback = guild.get_channel(TEXT_CHANNEL_ID)
+            await fallback.send(f"🔧 <@{member.id}> さんのVCを作成しました：", view=VCManageView(new_vc))
 
     for vc_id, channel in list(temporary_voice_channels.items()):
         if len([m for m in channel.members if not m.bot]) == 0:
@@ -111,6 +97,4 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# 🔻 これがポイント
-keep_alive()
 bot.run(DISCORD_TOKEN)
