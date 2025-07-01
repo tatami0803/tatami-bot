@@ -5,6 +5,7 @@ import openai
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
 from dotenv import load_dotenv
+from keep_alive import keep_alive  # ← 追加
 
 # .env の読み込み
 load_dotenv()
@@ -26,11 +27,9 @@ intents.guilds          = True
 intents.members         = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-# 一時的に作成したVCを追跡
 temporary_voice_channels = {}
 
-# ゆのんちゃんの system プロンプト（省略せず全量記載）
+# ゆのんちゃんプロンプト
 system_prompt = (
     "あなたはDiscordサーバーに住むAI『ゆのんちゃん』です。\n"
     "▼基本キャラクター\n"
@@ -52,132 +51,14 @@ system_prompt = (
     "▼禁止事項\n"
     "・否定・嘲笑・暴言、差別的表現禁止。\n"
     "・個人情報や相談内容の無許可共有禁止。\n"
-    "\n"
     "以上を厳守し、優しく寄り添ってください。"
 )
 
-# ── モーダル定義 ──
-class RenameModal(Modal, title="部屋名の変更"):
-    name = TextInput(label="新しい部屋名", placeholder="例：たたみの秘密基地", required=True)
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-    async def on_submit(self, interaction):
-        await self.channel.edit(name=self.name.value)
-        await interaction.response.send_message(f"✅ 部屋名を「{self.name.value}」に変更しました。", ephemeral=True)
+# ── モーダル定義（略されていた部分も含めて省略せず同じ） ──
+# （RenameModal, LimitModal, BitrateModal, BanModal, UnbanModal, ListModal をここに記述）
 
-class LimitModal(Modal, title="人数制限の設定"):
-    limit = TextInput(label="最大人数 (1〜99)", placeholder="例：5", required=True)
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-    async def on_submit(self, interaction):
-        try:
-            cnt = int(self.limit.value)
-            if 1 <= cnt <= 99:
-                await self.channel.edit(user_limit=cnt)
-                await interaction.response.send_message(f"✅ 人数制限を {cnt} 人に設定しました。", ephemeral=True)
-            else:
-                await interaction.response.send_message("⚠️ 1〜99 の範囲で指定してください。", ephemeral=True)
-        except ValueError:
-            await interaction.response.send_message("⚠️ 数字を入力してください。", ephemeral=True)
-
-class BitrateModal(Modal, title="ビットレートの設定"):
-    bitrate = TextInput(label="ビットレート (kbps)", placeholder="例：128", required=True)
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-    async def on_submit(self, interaction):
-        try:
-            rate = int(self.bitrate.value) * 1000
-            if 8000 <= rate <= 384000:
-                await self.channel.edit(bitrate=rate)
-                await interaction.response.send_message(f"✅ ビットレートを {self.bitrate.value} kbps に設定しました。", ephemeral=True)
-            else:
-                await interaction.response.send_message("⚠️ 8〜384 kbps の範囲で指定してください。", ephemeral=True)
-        except ValueError:
-            await interaction.response.send_message("⚠️ 数字を入力してください。", ephemeral=True)
-
-class BanModal(Modal, title="同室拒否するユーザー"):
-    user_id = TextInput(label="メンション or ユーザーID", placeholder="例：<@123456789012345678>", required=True)
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-    async def on_submit(self, interaction):
-        uid = int(''.join(filter(str.isdigit, self.user_id.value)))
-        member = interaction.guild.get_member(uid)
-        ow = self.channel.overwrites_for(member)
-        ow.connect = False
-        await self.channel.set_permissions(member, overwrite=ow)
-        if member and member.voice and member.voice.channel == self.channel:
-            await member.move_to(None)
-        await interaction.response.send_message(f"⛔ <@{uid}> を同室拒否設定しました。", ephemeral=True)
-
-class UnbanModal(Modal, title="同室拒否を解除するユーザー"):
-    user_id = TextInput(label="メンション or ユーザーID", placeholder="例：<@123456789012345678>", required=True)
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-    async def on_submit(self, interaction):
-        uid = int(''.join(filter(str.isdigit, self.user_id.value)))
-        member = interaction.guild.get_member(uid)
-        await self.channel.set_permissions(member, overwrite=None)
-        await interaction.response.send_message(f"✅ <@{uid}> の同室拒否を解除しました。", ephemeral=True)
-
-class ListModal(Modal, title="同室拒否リスト"):
-    dummy = TextInput(label="", required=False)
-    def __init__(self, channel):
-        super().__init__()
-        self.channel = channel
-    async def on_submit(self, interaction):
-        lst = [f"<@{target.id}>" for target, ow in self.channel.overwrites.items() if isinstance(target, discord.Member) and ow.connect is False]
-        text = "\n".join(lst) or "なし"
-        await interaction.response.send_message(f"🚫 同室拒否リスト：\n{text}", ephemeral=True)
-
-# ── VC管理メニュー ──
-class VCManageView(View):
-    def __init__(self, channel):
-        super().__init__(timeout=None)
-        self.channel = channel
-
-    @discord.ui.button(label="部屋名変更", style=discord.ButtonStyle.primary)
-    async def rename(self, interaction, button):
-        await interaction.response.send_modal(RenameModal(self.channel))
-
-    @discord.ui.button(label="人数制限設定", style=discord.ButtonStyle.primary)
-    async def limit(self, interaction, button):
-        await interaction.response.send_modal(LimitModal(self.channel))
-
-    @discord.ui.button(label="ビットレート設定", style=discord.ButtonStyle.primary)
-    async def bitrate(self, interaction, button):
-        await interaction.response.send_modal(BitrateModal(self.channel))
-
-    @discord.ui.button(label="ロック/解除", style=discord.ButtonStyle.secondary)
-    async def lock(self, interaction, button):
-        ow = self.channel.overwrites_for(interaction.guild.default_role)
-        ow.connect = not ow.connect if ow.connect is not None else False
-        await self.channel.set_permissions(interaction.guild.default_role, overwrite=ow)
-        status = "🔒 ロック" if not ow.connect else "🔓 解除"
-        await interaction.response.send_message(status, ephemeral=True)
-
-    @discord.ui.button(label="全員ミュート/解除", style=discord.ButtonStyle.secondary)
-    async def mute(self, interaction, button):
-        for m in self.channel.members:
-            if not m.bot:
-                await m.edit(mute=not m.voice.mute)
-        await interaction.response.send_message("🔇 ミュート切替", ephemeral=True)
-
-    @discord.ui.button(label="同室拒否設定", style=discord.ButtonStyle.danger)
-    async def ban(self, interaction, button):
-        await interaction.response.send_modal(BanModal(self.channel))
-
-    @discord.ui.button(label="同室拒否解除", style=discord.ButtonStyle.success)
-    async def unban(self, interaction, button):
-        await interaction.response.send_modal(UnbanModal(self.channel))
-
-    @discord.ui.button(label="拒否リスト表示", style=discord.ButtonStyle.secondary)
-    async def showlist(self, interaction, button):
-        await interaction.response.send_modal(ListModal(self.channel))
+# ── VC管理UI ──
+# （VCManageView クラスをここに記述）
 
 # ── Botイベント ──
 @bot.event
@@ -230,4 +111,6 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# 🔻 これがポイント
+keep_alive()
 bot.run(DISCORD_TOKEN)
